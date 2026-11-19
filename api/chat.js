@@ -1,6 +1,6 @@
 // api/chat.js
 
-const MODEL = "deepseek-v4-1-flash-1017-uncensored";
+const { completeChat } = require("../lib/venice");
 
 // Edit the text between the backticks to set the chatbot's instructions.
 // This stays on the server, but do not put secrets in the prompt.
@@ -20,9 +20,7 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  const apiKey = process.env.VENICE_API_KEY;
-
-  if (!apiKey) {
+  if (!process.env.VENICE_API_KEY) {
     return res.status(500).json({
       error: "VENICE_API_KEY is not configured in Vercel."
     });
@@ -68,69 +66,12 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  try {
-    const response = await fetch(
-      "https://api.venice.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: [
-            {
-              role: "system",
-              content: MASTER_PROMPT
-            },
-            ...messages.map(({ role, content }) => ({
-              role,
-              content
-            }))
-          ],
-          stream: false
-        }),
-        signal: AbortSignal.timeout(25000)
-      }
-    );
+  const result = await completeChat({
+    systemPrompt: MASTER_PROMPT,
+    messages
+  });
 
-    if (!response.ok) {
-      const errorMessages = {
-        400: "Venice rejected the request. Check the model ID and request settings.",
-        401: "Venice rejected the API key. Check VENICE_API_KEY.",
-        402: "Check your Venice account balance or billing.",
-        403: "Your Venice account or API key cannot access this request.",
-        404: "Venice could not find the requested model or endpoint.",
-        429: "Venice is rate-limiting requests. Please try again shortly."
-      };
-
-      return res.status(502).json({
-        error:
-          errorMessages[response.status] ||
-          `Venice request failed (${response.status}).`
-      });
-    }
-
-    const data = await response.json();
-    const reply = data?.choices?.[0]?.message?.content;
-
-    if (typeof reply !== "string" || !reply.trim()) {
-      return res.status(502).json({
-        error: "Venice returned an empty or invalid reply."
-      });
-    }
-
-    return res.status(200).json({ reply });
-  } catch (error) {
-    const timedOut =
-      error.name === "TimeoutError" ||
-      error.name === "AbortError";
-
-    return res.status(timedOut ? 504 : 502).json({
-      error: timedOut
-        ? "Venice took too long to respond. Please try again."
-        : "Unable to connect to Venice. Please try again."
-    });
-  }
+  return res.status(result.status).json(result.body);
 };
+
+module.exports.MASTER_PROMPT = MASTER_PROMPT;

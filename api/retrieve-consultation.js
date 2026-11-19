@@ -1,16 +1,17 @@
-// api/save-consultation.js
+// api/retrieve-consultation.js
+// Always reads public.consultations.stuff for the row whose id is 1.
+// This route does not insert or update anything.
 
 const fs = require("fs");
 const path = require("path");
-const { Pool, escapeLiteral } = require("pg");
+const { Pool } = require("pg");
 const { parse } = require("pg-connection-string");
 
 let pool;
 let poolFactory = defaultPoolFactory;
 
 // Supabase signs database certificates with its own root, which Node does
-// not ship. Verifying without this CA aborts the handshake, and the save
-// was reported as "Could not save the consultation. Please try again."
+// not ship. Verifying without this CA aborts the handshake.
 // Fingerprint (SHA-256):
 // 80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA
 function certificateAuthority() {
@@ -105,7 +106,7 @@ function defaultPoolFactory() {
   const next = new Pool(poolConfig());
 
   // A dropped idle connection emits 'error'. Without a listener, Node
-  // crashes the function instead of returning the save error.
+  // crashes the function instead of returning the retrieve error.
   next.on("error", (error) => {
     console.error(
       "Consultation database pool error:",
@@ -158,17 +159,16 @@ function isStaleConnection(error) {
 
 // A simple query, not a prepared statement. The Supabase transaction
 // pooler (port 6543), which Vercel needs, does not support prepared
-// statements. escapeLiteral keeps the transcript out of the SQL syntax.
-function updateSql(consultationText) {
+// statements. The id is fixed, so nothing from the request is interpolated.
+function selectSql() {
   return (
-    "update public.consultations\n" +
-    `set stuff = ${escapeLiteral(consultationText)}\n` +
-    "where id = 1\n" +
-    "returning id, created_at"
+    "select stuff\n" +
+    "from public.consultations\n" +
+    "where id = 1"
   );
 }
 
-function saveErrorMessage(error) {
+function retrieveErrorMessage(error) {
   const code = error?.code || error?.cause?.code || "";
   const message =
     typeof error?.message === "string" ? error.message : "";
@@ -217,26 +217,26 @@ function saveErrorMessage(error) {
   }
 
   if (code === "42703") {
-    return "The consultations table is missing id, stuff, or created_at.";
+    return "The consultations table is missing id or stuff.";
   }
 
   if (code === "22P02" || code === "42804") {
-    return "The consultation could not be stored. id must be a number and stuff must accept text.";
+    return "The consultation could not be read. id must be a number and stuff must be text.";
   }
 
   if (code === "42501") {
-    return "The database user is not allowed to update consultations.";
+    return "The database user is not allowed to read consultations.";
   }
 
   if (code === "26000" || code === "42P05") {
     return "The database pooler rejected the query.";
   }
 
-  return "Could not save the consultation. Please try again.";
+  return "Could not retrieve the consultation. Please try again.";
 }
 
-async function updateConsultation(consultationText) {
-  const sql = updateSql(consultationText);
+async function readConsultation() {
+  const sql = selectSql();
 
   try {
     return await getPool().query(sql);
@@ -258,11 +258,11 @@ async function updateConsultation(consultationText) {
 async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "POST");
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
 
     return res.status(405).json({
-      error: "Only POST requests are allowed."
+      error: "Only GET requests are allowed."
     });
   }
 
@@ -272,59 +272,11 @@ async function handler(req, res) {
     });
   }
 
-  let body;
-
   try {
-    body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : req.body;
-  } catch {
-    return res.status(400).json({
-      error: "Invalid JSON request."
-    });
-  }
+    const result = await readConsultation();
+    const row = result.rows && result.rows[0];
 
-  const messages = body?.messages;
-
-  if (
-    !Array.isArray(messages) ||
-    messages.length === 0 ||
-    messages.length > 200 ||
-    !messages.every(
-      (message) =>
-        message &&
-        ["user", "assistant"].includes(message.role) &&
-        typeof message.content === "string" &&
-        message.content.trim().length > 0
-    )
-  ) {
-    return res.status(400).json({
-      error: "Send between 1 and 200 valid conversation messages."
-    });
-  }
-
-  const consultationText = messages
-    .map((message) => {
-      const speaker =
-        message.role === "user" ? "You" : "Bot";
-
-      return `${speaker}:\n${message.content}`;
-    })
-    .join("\n\n");
-
-  if (Buffer.byteLength(consultationText, "utf8") > 500000) {
-    return res.status(413).json({
-      error: "The consultation is too large to save."
-    });
-  }
-
-  try {
-    // Overwrite only the "stuff" column in the row whose id is 1.
-    // No new row is created, and created_at remains unchanged.
-    const result = await updateConsultation(consultationText);
-
-    if (result.rowCount === 0) {
+    if (!row) {
       return res.status(404).json({
         error:
           "The consultation row with id = 1 does not exist. Create that row in Supabase first."
@@ -332,19 +284,17 @@ async function handler(req, res) {
     }
 
     return res.status(200).json({
-      success: true,
-      id: result.rows[0].id,
-      createdAt: result.rows[0].created_at
+      text: row.stuff == null ? "" : String(row.stuff)
     });
   } catch (error) {
     // Do not log credentials or consultation content.
     console.error(
-      "Consultation save failed:",
+      "Consultation retrieve failed:",
       error.code || "UNKNOWN"
     );
 
     return res.status(500).json({
-      error: saveErrorMessage(error)
+      error: retrieveErrorMessage(error)
     });
   }
 }
@@ -361,8 +311,8 @@ function useDefaultPoolFactoryForTests() {
 
 module.exports = handler;
 module.exports.poolConfig = poolConfig;
-module.exports.updateSql = updateSql;
-module.exports.saveErrorMessage = saveErrorMessage;
+module.exports.selectSql = selectSql;
+module.exports.retrieveErrorMessage = retrieveErrorMessage;
 module.exports.setPoolFactoryForTests = setPoolFactoryForTests;
 module.exports.useDefaultPoolFactoryForTests =
   useDefaultPoolFactoryForTests;
