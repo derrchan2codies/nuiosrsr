@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Text boxes</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: white; color: black; font: 16px/1.5 Arial, sans-serif; }
+    main { max-width: 920px; margin: 0 auto; border: 2px solid black; padding: 32px; }
+    section + section { margin-top: 24px; }
+    h2 { margin: 0 0 8px; font-size: 16px; font-weight: normal; }
+    .box { border: 1px solid black; padding: 16px; min-height: 112px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
+    #box1 { min-height: 180px; }
+    #box3 { min-height: 80px; }
+    .actions { margin-top: 8px; display: flex; justify-content: flex-end; }
+    button { min-height: 44px; border: 1px solid black; border-radius: 0; padding: 8px 16px; background: white; color: black; font: inherit; cursor: pointer; }
+    button:hover:not(:disabled) { background: black; color: white; }
+    button:focus-visible { outline: 2px solid black; outline-offset: 4px; }
+    button:disabled { cursor: not-allowed; border-style: dashed; }
+    .note { margin: 16px 0 0; font-size: 14px; }
+    #status { margin: 8px 0 0; font-size: 14px; min-height: 21px; }
+    @media (max-width: 540px) {
+      body { padding: 16px; }
+      main { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main aria-label="Text presentation prototype">
+    <section aria-labelledby="label1">
+      <h2 id="label1">box 1</h2>
+      <!-- Future Supabase text will be displayed here using textContent. -->
+      <div id="box1" class="box" role="region" aria-labelledby="label1" aria-live="polite"></div>
+      <div class="actions"><button id="retrieve" type="button">retrieve from database</button></div>
+    </section>
+    <section aria-labelledby="label2">
+      <h2 id="label2">box 2</h2>
+      <div id="box2" class="box" role="region" aria-labelledby="label2" aria-live="polite"></div>
+      <div class="actions"><button id="analyse" type="button">LLM analysis</button></div>
+    </section>
+    <section aria-labelledby="label3">
+      <h2 id="label3">box 3</h2>
+      <div id="box3" class="box" role="region" aria-labelledby="label3" aria-live="polite"></div>
+      <div class="actions"><button id="copy-box2" type="button">retrieve box 2 answer</button></div>
+      <div class="actions"><button type="button" disabled aria-describedby="prototype-note">retrieve prescription</button></div>
+    </section>
+    <p class="note" id="prototype-note">Demo only: no database or LLM is connected. The retrieve prescription button is inactive.</p>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+    const box1 = document.getElementById('box1');
+    const box2 = document.getElementById('box2');
+    const box3 = document.getElementById('box3');
+    const status = document.getElementById('status');
+​
+    // Demo only. Replace this handler with database retrieval in the future.
+    document.getElementById('retrieve').addEventListener('click', () => {
+      box1.textContent = 'This is sample text. In the future, text retrieved from Supabase will appear here.';
+      status.textContent = 'Demo text loaded into box 1.';
+    });
+​
+    // Copy the text currently displayed in box 1 into box 2. No LLM call.
+    document.getElementById('analyse').addEventListener('click', () => {
+      const text = box1.textContent;
+      if (!text.trim()) {
+        status.textContent = 'Load text into box 1 first.';
+        return;
+      }
+      box2.textContent = text;
+      status.textContent = 'Text copied from box 1 into box 2.';
+    });
+    // Copy whatever is currently displayed in box 2 into box 3.
+    document.getElementById('copy-box2').addEventListener('click', () => {
+      box3.textContent = box2.textContent;
+      status.textContent = box2.textContent.trim()
+        ? 'Text copied from box 2 into box 3.'
+        : 'Box 2 is empty. Box 3 has been cleared.';
+    });
+  </script>
+</body>
+</html>
+​
