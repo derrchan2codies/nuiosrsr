@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const { afterEach, describe, test } = require("node:test");
 
-const handler = require("../api/save-consultation");
+const handler = require("../api/retrieve-consultation");
 
 const SUPABASE_CA_SHA256 =
   "807025ad50d4ed219d2c9c7d299c004f824eb00cf7f65afef607d07b72e6cafa";
@@ -46,11 +46,10 @@ function mockRes() {
   };
 }
 
-function request(body, method = "POST") {
+function request(method = "GET") {
   return handler(
     {
-      method,
-      body
+      method
     },
     mockRes()
   ).then((res) => res);
@@ -58,7 +57,7 @@ function request(body, method = "POST") {
 
 afterEach(restoreEnv);
 
-describe("consultation save", { concurrency: 1 }, () => {
+describe("consultation retrieve", { concurrency: 1 }, () => {
   test("bundles the Supabase root and keeps it when sslmode would replace ssl", () => {
     delete process.env.DATABASE_CA_CERT;
     process.env.DATABASE_URL =
@@ -118,55 +117,31 @@ describe("consultation save", { concurrency: 1 }, () => {
     assert.equal(config.ssl.rejectUnauthorized, true);
   });
 
-  test("stores the transcript as one literal and does not prepare the statement", () => {
-    const sql = handler.updateSql(
-      "hello 'there'\nnext"
-    );
+  test("reads stuff from row 1 and does not write", () => {
+    const sql = handler.selectSql();
 
-    assert.match(sql, /set stuff = 'hello ''there''\nnext'/);
+    assert.match(sql, /select stuff/);
+    assert.match(sql, /from public\.consultations/);
     assert.match(sql, /where id = 1/);
     assert.equal(sql.includes("$1"), false);
-
-    const injected = handler.updateSql(
-      "'); drop table consultations; --"
-    );
-
-    assert.equal(
-      injected.includes(
-        "set stuff = '''); drop table consultations; --'"
-      ),
-      true
-    );
-    assert.equal(
-      injected.includes("\ndrop table"),
-      false
-    );
+    assert.equal(/\b(update|insert|delete|set)\b/i.test(sql), false);
   });
 
-  test("rejects anything other than a usable transcript", async () => {
+  test("rejects anything other than a retrieve", async () => {
     process.env.DATABASE_URL =
       "postgresql://postgres:secret@127.0.0.1:5432/postgres";
 
-    const method = await request(null, "GET");
+    const method = await request("POST");
     assert.equal(method.statusCode, 405);
+    assert.equal(method.headers.Allow, "GET");
 
     delete process.env.DATABASE_URL;
-    const missing = await request({
-      messages: [{ role: "user", content: "hi" }]
-    });
+    const missing = await request("GET");
     assert.equal(missing.statusCode, 500);
     assert.match(missing.body.error, /not configured/);
-
-    process.env.DATABASE_URL =
-      "postgresql://postgres:secret@127.0.0.1:5432/postgres";
-    const invalid = await request("{");
-    assert.equal(invalid.statusCode, 400);
-
-    const empty = await request({ messages: [] });
-    assert.equal(empty.statusCode, 400);
   });
 
-  test("updates row 1 and reports a dropped connection once", async () => {
+  test("returns the stuff text from row 1 and retries a dropped connection once", async () => {
     process.env.DATABASE_URL =
       "postgresql://postgres:secret@127.0.0.1:5432/postgres";
 
@@ -192,27 +167,39 @@ describe("consultation save", { concurrency: 1 }, () => {
 
           return {
             rowCount: 1,
-            rows: [{ id: 1, created_at: "2026-01-01T00:00:00.000Z" }]
+            rows: [{ stuff: "hello 'there'\nnext" }]
           };
         },
         async end() {}
       };
     });
 
-    const saved = await request({
-      messages: [
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "hi there" }
-      ]
-    });
+    const loaded = await request("GET");
 
-    assert.equal(saved.statusCode, 200);
-    assert.equal(saved.body.success, true);
-    assert.equal(saved.body.id, 1);
+    assert.equal(loaded.statusCode, 200);
+    assert.equal(loaded.body.text, "hello 'there'\nnext");
     assert.equal(connections, 2);
-    assert.match(queries[0], /You:\nhello/);
-    assert.match(queries[1], /Bot:\nhi there/);
+    assert.match(queries[0], /select stuff/);
+    assert.match(queries[0], /where id = 1/);
+    assert.match(queries[1], /where id = 1/);
     assert.equal(queries[0].includes("$1"), false);
+    assert.equal(/\bupdate\b/i.test(queries[0]), false);
+  });
+
+  test("returns an empty string when stuff is null", async () => {
+    process.env.DATABASE_URL =
+      "postgresql://postgres:secret@127.0.0.1:5432/postgres";
+
+    handler.setPoolFactoryForTests(() => ({
+      async query() {
+        return { rowCount: 1, rows: [{ stuff: null }] };
+      },
+      async end() {}
+    }));
+
+    const loaded = await request("GET");
+    assert.equal(loaded.statusCode, 200);
+    assert.equal(loaded.body.text, "");
   });
 
   test("keeps the missing-row response and names database failures", async () => {
@@ -226,9 +213,7 @@ describe("consultation save", { concurrency: 1 }, () => {
       async end() {}
     }));
 
-    const missing = await request({
-      messages: [{ role: "user", content: "hello" }]
-    });
+    const missing = await request("GET");
     assert.equal(missing.statusCode, 404);
     assert.match(missing.body.error, /id = 1/);
 
@@ -241,17 +226,13 @@ describe("consultation save", { concurrency: 1 }, () => {
       async end() {}
     }));
 
-    const column = await request({
-      messages: [{ role: "user", content: "hello" }]
-    });
+    const column = await request("GET");
     assert.equal(column.statusCode, 500);
-    assert.match(column.body.error, /missing id, stuff, or created_at/);
+    assert.match(column.body.error, /missing id or stuff/);
 
     handler.useDefaultPoolFactoryForTests();
     process.env.DATABASE_URL = "postgresql://not a url";
-    const invalid = await request({
-      messages: [{ role: "user", content: "hello" }]
-    });
+    const invalid = await request("GET");
     assert.equal(invalid.statusCode, 500);
     assert.match(invalid.body.error, /Percent-encode/);
   });

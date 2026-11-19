@@ -30,7 +30,6 @@
   <main aria-label="Text presentation prototype">
     <section aria-labelledby="label1">
       <h2 id="label1">box 1</h2>
-      <!-- Future Supabase text will be displayed here using textContent. -->
       <div id="box1" class="box" role="region" aria-labelledby="label1" aria-live="polite"></div>
       <div class="actions"><button id="retrieve" type="button">retrieve from database</button></div>
     </section>
@@ -43,9 +42,9 @@
       <h2 id="label3">box 3</h2>
       <div id="box3" class="box" role="region" aria-labelledby="label3" aria-live="polite"></div>
       <div class="actions"><button id="copy-box2" type="button">retrieve box 2 answer</button></div>
-      <div class="actions"><button type="button" disabled aria-describedby="prototype-note">retrieve prescription</button></div>
+      <div class="actions"><button id="prescription" type="button">retrieve prescription</button></div>
     </section>
-    <p class="note" id="prototype-note">Demo only: no database or LLM is connected. The retrieve prescription button is inactive.</p>
+    <p class="note">Box 1 always shows row 1, column stuff. LLM analysis and retrieve prescription each use their own prompt and replace that box with only the answer.</p>
     <p id="status" role="status" aria-live="polite"></p>
   </main>
   <script>
@@ -53,31 +52,125 @@
     const box2 = document.getElementById('box2');
     const box3 = document.getElementById('box3');
     const status = document.getElementById('status');
-​
-    // Demo only. Replace this handler with database retrieval in the future.
-    document.getElementById('retrieve').addEventListener('click', () => {
-      box1.textContent = 'This is sample text. In the future, text retrieved from Supabase will appear here.';
-      status.textContent = 'Demo text loaded into box 1.';
-    });
-​
-    // Copy the text currently displayed in box 1 into box 2. No LLM call.
-    document.getElementById('analyse').addEventListener('click', () => {
+    const retrieveButton = document.getElementById('retrieve');
+    const analyseButton = document.getElementById('analyse');
+    const prescriptionButton = document.getElementById('prescription');
+
+    function errorText(data, fallback) {
+      return data && typeof data.error === 'string' && data.error.trim()
+        ? data.error
+        : fallback;
+    }
+
+    async function retrieveConsultation() {
+      retrieveButton.disabled = true;
+      box1.setAttribute('aria-busy', 'true');
+      status.textContent = 'Retrieving the consultation.';
+
+      try {
+        const response = await fetch('/api/retrieve-consultation', {
+          cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          status.textContent = errorText(data, 'Could not retrieve the consultation. Please try again.');
+          return;
+        }
+
+        const text = typeof data.text === 'string' ? data.text : '';
+        box1.textContent = text;
+        status.textContent = text.trim()
+          ? 'Consultation loaded into box 1.'
+          : 'Row 1 has no text in the stuff column.';
+      } catch {
+        status.textContent = 'Could not retrieve the consultation. Please try again.';
+      } finally {
+        retrieveButton.disabled = false;
+        box1.removeAttribute('aria-busy');
+      }
+    }
+
+    // Sends text to one Venice route and replaces the target box with only the reply.
+    async function askVenice(url, text, box, button, pendingStatus, doneStatus) {
+      button.disabled = true;
+      box.setAttribute('aria-busy', 'true');
+      status.textContent = pendingStatus;
+
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          status.textContent = errorText(data, 'The request failed. Please try again.');
+          return;
+        }
+
+        if (typeof data.reply !== 'string') {
+          status.textContent = 'The response did not include an answer.';
+          return;
+        }
+
+        box.textContent = data.reply;
+        status.textContent = doneStatus;
+      } catch {
+        status.textContent = 'The request failed. Please try again.';
+      } finally {
+        button.disabled = false;
+        box.removeAttribute('aria-busy');
+      }
+    }
+
+    retrieveButton.addEventListener('click', retrieveConsultation);
+
+    analyseButton.addEventListener('click', () => {
       const text = box1.textContent;
+
       if (!text.trim()) {
         status.textContent = 'Load text into box 1 first.';
         return;
       }
-      box2.textContent = text;
-      status.textContent = 'Text copied from box 1 into box 2.';
+
+      askVenice(
+        '/api/analyse',
+        text,
+        box2,
+        analyseButton,
+        'Asking for the analysis.',
+        'Box 2 now shows only the analysis.'
+      );
     });
-    // Copy whatever is currently displayed in box 2 into box 3.
+
     document.getElementById('copy-box2').addEventListener('click', () => {
       box3.textContent = box2.textContent;
       status.textContent = box2.textContent.trim()
         ? 'Text copied from box 2 into box 3.'
         : 'Box 2 is empty. Box 3 has been cleared.';
     });
+
+    prescriptionButton.addEventListener('click', () => {
+      const text = box2.textContent;
+
+      if (!text.trim()) {
+        status.textContent = 'Run LLM analysis first so box 2 has an answer.';
+        return;
+      }
+
+      askVenice(
+        '/api/prescription',
+        text,
+        box3,
+        prescriptionButton,
+        'Asking for the prescription.',
+        'Box 3 now shows only the prescription.'
+      );
+    });
+
+    retrieveConsultation();
   </script>
 </body>
 </html>
-​
